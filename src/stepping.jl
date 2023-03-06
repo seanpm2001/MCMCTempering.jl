@@ -26,19 +26,33 @@ function AbstractMCMC.step(
     # the processes, and performs swaps by moving the (inverse) temperatures
     # `β` between the processes, rather than moving states between processes
     # and keeping the `β` local to each process.
-    # 
+    #
     # Therefore we iterate over the processes and then extract the corresponding
     # `β`, `sampler` and `state`, and take a initialize.
-    transitions_and_states = [
-        AbstractMCMC.step(
-            rng,
-            make_tempered_model(sampler, model, sampler.inverse_temperatures[i]),
-            getsampler(sampler, i);
-            init_params=get_init_params(init_params, i),
-            kwargs...
-        )
-        for i in 1:numtemps(sampler)
-    ]
+    # Check if prior in kwargs
+    transitions_and_states = if :prior in keys(kwargs)
+        [
+            AbstractMCMC.step(
+                rng,
+                make_tempered_model(sampler, model, maybe_wrap_model(kwargs[:prior]), sampler.inverse_temperatures[i]),
+                getsampler(sampler, i);
+                init_params=get_init_params(init_params, i),
+                kwargs...
+            )
+            for i in 1:numtemps(sampler)
+        ]
+    else
+         [
+            AbstractMCMC.step(
+                rng,
+                make_tempered_model(sampler, model, sampler.inverse_temperatures[i]),
+                getsampler(sampler, i);
+                init_params=get_init_params(init_params, i),
+                kwargs...
+            )
+            for i in 1:numtemps(sampler)
+        ]
+    end
 
     # Make sure to collect, because we'll be using `setindex!(!)` later.
     process_to_chain = collect(1:length(sampler.inverse_temperatures))
@@ -90,7 +104,7 @@ function AbstractMCMC.step(
     @set! state.swap_acceptance_ratios = empty(state.swap_acceptance_ratios)
 
     if should_swap(sampler, state)
-        state = swap_step(rng, model, sampler, state)
+        state = swap_step(rng, model, sampler, state; kwargs...)
         @set! state.is_swap = true
     else
         state = no_swap_step(rng, model, sampler, state; kwargs...)
@@ -114,19 +128,32 @@ function no_swap_step(
     # the processes, and performs swaps by moving the (inverse) temperatures
     # `β` between the processes, rather than moving states between processes
     # and keeping the `β` local to each process.
-    # 
+    #
     # Therefore we iterate over the processes and then extract the corresponding
     # `β`, `sampler` and `state`, and take a step.
-    @set! state.transitions_and_states = [
-        AbstractMCMC.step(
-            rng,
-            make_tempered_model(sampler, model, beta_for_process(state, i)),
-            sampler_for_process(sampler, state, i),
-            state_for_process(state, i);
-            kwargs...
-        )
-        for i in 1:numtemps(sampler)
-    ]
+    @set! state.transitions_and_states = if :prior in keys(kwargs)
+        [
+            AbstractMCMC.step(
+                rng,
+                make_tempered_model(sampler, model, maybe_wrap_model(kwargs[:prior]), beta_for_process(state, i)),
+                sampler_for_process(sampler, state, i),
+                state_for_process(state, i);
+                kwargs...
+            )
+            for i in 1:numtemps(sampler)
+        ]
+    else
+        [
+            AbstractMCMC.step(
+                rng,
+                make_tempered_model(sampler, model, beta_for_process(state, i)),
+                sampler_for_process(sampler, state, i),
+                state_for_process(state, i);
+                kwargs...
+            )
+            for i in 1:numtemps(sampler)
+        ]
+    end
 
     return state
 end
@@ -143,9 +170,10 @@ function swap_step(
     rng::Random.AbstractRNG,
     model,
     sampler::TemperedSampler,
-    state::TemperedState
+    state::TemperedState;
+    kwargs...
 )
-    return swap_step(swapstrategy(sampler), rng, model, sampler, state)
+    return swap_step(swapstrategy(sampler), rng, model, sampler, state; kwargs...)
 end
 
 function swap_step(
@@ -153,13 +181,14 @@ function swap_step(
     rng::Random.AbstractRNG,
     model,
     sampler::TemperedSampler,
-    state::TemperedState
+    state::TemperedState;
+    kwargs...
 )
     # Randomly select whether to attempt swaps between chains
     # corresponding to odd or even indices of the temperature ladder
     odd = rand([true, false])
     for k in [Int(2 * i - odd) for i in 1:(floor((numtemps(sampler) - 1 + odd) / 2))]
-        state = swap_attempt(rng, model, sampler, state, k, k + 1, sampler.adapt)
+        state = swap_attempt(rng, model, sampler, state, k, k + 1, sampler.adapt; kwargs...)
     end
     return state
 end
@@ -169,13 +198,14 @@ function swap_step(
     rng::Random.AbstractRNG,
     model,
     sampler::TemperedSampler,
-    state::TemperedState
+    state::TemperedState;
+    kwargs...
 )
     # Alternate between attempting to swap chains corresponding
     # to odd and even indices of the temperature ladder
     odd = state.total_steps % (2 * sampler.swap_every) != 0
     for k in [Int(2 * i - odd) for i in 1:(floor((numtemps(sampler) - 1 + odd) / 2))]
-        state = swap_attempt(rng, model, sampler, state, k, k + 1, sampler.adapt)
+        state = swap_attempt(rng, model, sampler, state, k, k + 1, sampler.adapt; kwargs...)
     end
     return state
 end
@@ -185,12 +215,13 @@ function swap_step(
     rng::Random.AbstractRNG,
     model,
     sampler::TemperedSampler,
-    state::TemperedState
+    state::TemperedState;
+    kwargs...
 )
     # Randomly pick one index `k` of the temperature ladder and
     # attempt a swap between the corresponding chain and its neighbour
     k = rand(rng, 1:(numtemps(sampler) - 1))
-    return swap_attempt(rng, model, sampler, state, k, k + 1, sampler.adapt)
+    return swap_attempt(rng, model, sampler, state, k, k + 1, sampler.adapt; kwargs...)
 end
 
 function swap_step(
@@ -198,14 +229,15 @@ function swap_step(
     rng::Random.AbstractRNG,
     model,
     sampler::TemperedSampler,
-    state::TemperedState
+    state::TemperedState;
+    kwargs...
 )
     # Randomly pick two temperature ladder indices in order to
     # attempt a swap between the corresponding chains
     chains = Set(1:numtemps(sampler))
     i = pop!(chains, rand(rng, chains))
     j = pop!(chains, rand(rng, chains))
-    return swap_attempt(rng, model, sampler, state, i, j, sampler.adapt)
+    return swap_attempt(rng, model, sampler, state, i, j, sampler.adapt; kwargs...)
 end
 
 function swap_step(
@@ -213,7 +245,8 @@ function swap_step(
     rng::Random.AbstractRNG,
     model,
     sampler::TemperedSampler,
-    state::TemperedState
+    state::TemperedState;
+    kwargs...
 )
     # Iterate through all of temperature ladder indices, picking random
     # pairs and attempting swaps between the corresponding chains
@@ -221,7 +254,7 @@ function swap_step(
     while length(chains) >= 2
         i = pop!(chains, rand(rng, chains))
         j = pop!(chains, rand(rng, chains))
-        state = swap_attempt(rng, model, sampler, state, i, j, sampler.adapt)
+        state = swap_attempt(rng, model, sampler, state, i, j, sampler.adapt; kwargs...)
     end
     return state
 end
@@ -231,7 +264,8 @@ function swap_step(
     rng::Random.AbstractRNG,
     model,
     sampler::TemperedSampler,
-    state::TemperedState
+    state::TemperedState;
+    kwargs...
 )
     return state
 end

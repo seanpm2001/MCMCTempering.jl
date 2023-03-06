@@ -107,20 +107,24 @@ end
 Return `(logπ(transition, β), logπ(transition_other, β))` where `logπ(x, β)` denotes the
 log-density for `model` with inverse-temperature `β`.
 
-The default implementation extracts the parameters from the transitions using [`getparams`](@ref) 
+The default implementation extracts the parameters from the transitions using [`getparams`](@ref)
 and calls [`logdensity`](@ref) on the model returned from [`make_tempered_model`](@ref).
 """
-function compute_tempered_logdensities(model, sampler, transition, transition_other, β)
-    tempered_model = make_tempered_model(sampler, model, β)
+function compute_tempered_logdensities(model, sampler, transition, transition_other, β; kwargs...)
+    tempered_model = if :prior in keys(kwargs)
+        make_tempered_model(sampler, model, maybe_wrap_model(kwargs[:prior]), β)
+    else
+        make_tempered_model(sampler, model, β)
+    end
     return (
         logdensity(tempered_model, getparams(transition)),
         logdensity(tempered_model, getparams(transition_other))
     )
 end
 function compute_tempered_logdensities(
-    model, sampler, sampler_other, transition, transition_other, state, state_other, β, β_other
+    model, sampler, sampler_other, transition, transition_other, state, state_other, β, β_other; kwargs...
 )
-    return compute_tempered_logdensities(model, sampler, transition, transition_other, β)
+    return compute_tempered_logdensities(model, sampler, transition, transition_other, β; kwargs...)
 end
 
 """
@@ -141,7 +145,7 @@ end
 Attempt to swap the temperatures of two chains by tempering the densities and
 calculating the swap acceptance ratio; then swapping if it is accepted.
 """
-function swap_attempt(rng, model, sampler, state, i, j, adapt)
+function swap_attempt(rng, model, sampler, state, i, j, adapt; kwargs...)
     # Extract the relevant transitions.
     sampler_i = sampler_for_chain(sampler, state, i)
     sampler_j = sampler_for_chain(sampler, state, j)
@@ -153,12 +157,12 @@ function swap_attempt(rng, model, sampler, state, i, j, adapt)
     β_j = beta_for_chain(state, j)
     # Evaluate logdensity for both parameters for each tempered density.
     logπiθi, logπiθj = compute_tempered_logdensities(
-        model, sampler_i, sampler_j, transition_i, transition_j, state_i, state_j, β_i, β_j
+        model, sampler_i, sampler_j, transition_i, transition_j, state_i, state_j, β_i, β_j; kwargs...
     )
     logπjθj, logπjθi = compute_tempered_logdensities(
-        model, sampler_j, sampler_i, transition_j, transition_i, state_j, state_i, β_j, β_i
+        model, sampler_j, sampler_i, transition_j, transition_i, state_j, state_i, β_j, β_i; kwargs...
     )
-    
+
     # If the proposed temperature swap is accepted according `logα`,
     # swap the temperatures for future steps.
     logα = swap_acceptance_pt(logπiθi, logπiθj, logπjθi, logπjθj)
